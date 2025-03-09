@@ -35,6 +35,8 @@ namespace PatheonParser
         public string LastHash { get; set; }
         public Queue<string> RecentLines { get; set; }
         public HashSet<string> SeenLines { get; set; }
+        public DateTime LastAction { get; set; } = DateTime.MinValue;
+        public int CurrentEncounterId { get; set; } = 0;
 
         public CaptureManager()
         {
@@ -45,6 +47,17 @@ namespace PatheonParser
             SeenLines = new HashSet<string>();
 
             CreateTables();
+        }
+
+        public int GetCurrentEncounterId()
+        {
+            var delta = DateTime.Now - LastAction;
+            if (delta.TotalSeconds > Properties.Settings.Default.EncounterTimeout)
+            {
+                CurrentEncounterId = AddEncounter(string.Empty);
+            }
+            LastAction = DateTime.Now;
+            return CurrentEncounterId;
         }
 
         public void CheckForChanges()
@@ -63,13 +76,9 @@ namespace PatheonParser
                 LastHash = newHash;
 
                 using var originalImage = PixConverter.ToPix(bitmap);
-                //originalImage.Save("c:\\temp\\full-originalImage.png");
-                using var grayscaleImage = originalImage.ConvertRGBToGray();
-                //grayscaleImage.Save("c:\\temp\\full-grayscaleImage.png");
-                using var binarizedImage = grayscaleImage.BinarizeOtsuAdaptiveThreshold(128, 128, 10, 10, 0.1f);
-                //binarizedImage.Save("c:\\temp\\full-binarizedImage.png");
+                using var invertedImage = originalImage.Invert();
 
-                CombatWindowRect = FindCombatWindowRect(binarizedImage);
+                CombatWindowRect = FindCombatWindowRect(invertedImage);
 
                 LastHash = string.Empty;
             }
@@ -90,13 +99,9 @@ namespace PatheonParser
                 LastHash = newHash;
 
                 using var originalImage = PixConverter.ToPix(croppedBitmap);
-                //originalImage.Save("c:\\temp\\crop-originalImage.png");
-                using var grayscaleImage = originalImage.ConvertRGBToGray();
-                //grayscaleImage.Save("c:\\temp\\crop-grayscaleImage.png");
-                using var binarizedImage = grayscaleImage.BinarizeOtsuAdaptiveThreshold(128, 128, 10, 10, 0.1f);
-                //binarizedImage.Save("c:\\temp\\crop-binarizedImage.png");
+                using var invertedImage = originalImage.Invert();
 
-                CheckImageForChanges(binarizedImage);
+                CheckImageForChanges(invertedImage);
             }
         }
 
@@ -138,21 +143,22 @@ namespace PatheonParser
                             SeenLines.Remove(oldestLine);
                         }
 
+                        var currentEncounterId = GetCurrentEncounterId();
+
                         var matches = AttackRegex().Matches(line);
                         if (matches is not null && matches.Count > 0)
                         {
                             foreach (Match match in matches)
                             {
                                 //"(\w+) dealt (\d+) (\w+) damage to (\w+) with (\w+). \((\d+) mitigated\)"
-                                var sourceName = match.Captures.Count > 1 ? match.Captures[1].Value : string.Empty;
-                                var damageAmount = match.Captures.Count > 2 ? int.Parse(match.Captures[2].Value.Trim()) : 0;
-                                var damageType = match.Captures.Count > 3 ? match.Captures[3].Value : string.Empty;
-                                var targetName = match.Captures.Count > 4 ? match.Captures[4].Value : string.Empty;
-                                var skillName = match.Captures.Count > 5 ? match.Captures[5].Value : string.Empty;
-                                var mitigatedAmount = match.Captures.Count > 6 ? int.Parse(match.Captures[6].Value.Trim()) : 0;
-                                AddAttack(0, sourceName, targetName, damageType, skillName, damageAmount, mitigatedAmount);
+                                var sourceName = match.Groups.Count > 1 ? match.Groups[1].Value : string.Empty;
+                                var damageAmount = match.Groups.Count > 2 ? int.Parse(match.Groups[2].Value.Trim()) : 0;
+                                var damageType = match.Groups.Count > 3 ? match.Groups[3].Value : string.Empty;
+                                var targetName = match.Groups.Count > 4 ? match.Groups[4].Value : string.Empty;
+                                var skillName = match.Groups.Count > 5 ? match.Groups[5].Value : string.Empty;
+                                var mitigatedAmount = match.Groups.Count > 6 ? int.Parse(match.Groups[6].Value.Trim()) : 0;
+                                AddAttack(currentEncounterId, sourceName, targetName, damageType, skillName, damageAmount, mitigatedAmount);
                             }
-
                         }
                         else
                         {
@@ -162,10 +168,10 @@ namespace PatheonParser
                                 foreach (Match match in matches)
                                 {
                                     //"(\w+) was healed for (\d+) by (\w+)."
-                                    var targetName = match.Captures.Count > 1 ? match.Captures[1].Value : string.Empty;
-                                    var amount = match.Captures.Count > 2 ? int.Parse(match.Captures[2].Value.Trim()) : 0;
-                                    var skillName = match.Captures.Count > 3 ? match.Captures[3].Value : string.Empty;
-                                    AddHeal(0, string.Empty, targetName, skillName, amount);
+                                    var targetName = match.Groups.Count > 1 ? match.Groups[1].Value : string.Empty;
+                                    var amount = match.Groups.Count > 2 ? int.Parse(match.Groups[2].Value.Trim()) : 0;
+                                    var skillName = match.Groups.Count > 3 ? match.Groups[3].Value : string.Empty;
+                                    AddHeal(currentEncounterId, string.Empty, targetName, skillName, amount);
                                 }
                             }
                             else
@@ -176,22 +182,24 @@ namespace PatheonParser
                                     foreach (Match match in matches)
                                     {
                                         //"(\w+)'s (\w+) healed (\w+) for (\d+)."
-                                        var sourceName = match.Captures.Count > 1 ? match.Captures[1].Value : string.Empty;
-                                        var skillName = match.Captures.Count > 2 ? match.Captures[2].Value : string.Empty;
-                                        var targetName = match.Captures.Count > 3 ? match.Captures[3].Value : string.Empty;
-                                        var amount = match.Captures.Count > 4 ? int.Parse(match.Captures[4].Value.Trim()) : 0;
-                                        AddHeal(0, sourceName, targetName, skillName, amount);
+                                        var sourceName = match.Groups.Count > 1 ? match.Groups[1].Value : string.Empty;
+                                        var skillName = match.Groups.Count > 2 ? match.Groups[2].Value : string.Empty;
+                                        var targetName = match.Groups.Count > 3 ? match.Groups[3].Value : string.Empty;
+                                        var amount = match.Groups.Count > 4 ? int.Parse(match.Groups[4].Value.Trim()) : 0;
+                                        AddHeal(currentEncounterId, sourceName, targetName, skillName, amount);
                                     }
                                 }
                             }
                         }
-
+                        File.AppendAllText("log.txt", string.Concat(line, "\n"));
                         RecentLines.Enqueue(line);
                         SeenLines.Add(line);
+                        if (MainForm.Instance is not null)
+                        {
+                            MainForm.Instance.Invoke((MethodInvoker)(() => MainForm.Instance.AddLog(line)));
+                        }
                     }
                 }
-
-                File.AppendAllLines("c:\\temp\\log.txt", lines);
             }
         }
 
@@ -200,19 +208,36 @@ namespace PatheonParser
             using var connection = new SQLiteConnection("Data Source=PatheonParser.db");
             connection.Open();
 
+            using var encounterCommand = new SQLiteCommand("CREATE TABLE IF NOT EXISTS encounters (id INTEGER PRIMARY KEY,notes TEXT)", connection);
+            encounterCommand.ExecuteNonQuery();
+
             using var attackCommand = new SQLiteCommand("CREATE TABLE IF NOT EXISTS attacks (id INTEGER PRIMARY KEY,encounter_id INTEGER,source_name TEXT,target_name TEXT,damage_type TEXT,skill_name TEXT,damage_amount INTEGER,mitigated_amount INTEGER)", connection);
             attackCommand.ExecuteNonQuery();
 
-            using var healCommand = new SQLiteCommand("CREATE TABLE IF NOT EXISTS attacks (id INTEGER PRIMARY KEY,encounter_id INTEGER,source_name TEXT,target_name TEXT,skill_name TEXT,amount INTEGER)", connection);
+            using var healCommand = new SQLiteCommand("CREATE TABLE IF NOT EXISTS heals (id INTEGER PRIMARY KEY,encounter_id INTEGER,source_name TEXT,target_name TEXT,skill_name TEXT,amount INTEGER)", connection);
             healCommand.ExecuteNonQuery();
         }
 
-        public void AddAttack(int encounterId, string sourceName, string targetName, string damageType, string skillName, int damageAmount, int mitigatedAmount)
+        public int AddEncounter(string notes)
         {
             using var connection = new SQLiteConnection("Data Source=PatheonParser.db");
             connection.Open();
-            using var command = new SQLiteCommand("INSERT INTO attacks (encounter_id, source_name,target_name,damage_type,skill_name,damage_amount,mitigated_amount) VALUES (@EncounterId,@SourceName,@TargetName,@DamageType,@SkillName,@DamageAmount,@MitigatedAmount)", connection);
+            using var command = new SQLiteCommand("INSERT INTO encounters (notes) VALUES (@Notes) RETURNING id;", connection);
+            command.Parameters.AddWithValue("@Notes", notes);
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return reader.GetInt32(0);
+            }
 
+            return 0;
+        }
+
+        public int AddAttack(int encounterId, string sourceName, string targetName, string damageType, string skillName, int damageAmount, int mitigatedAmount)
+        {
+            using var connection = new SQLiteConnection("Data Source=PatheonParser.db");
+            connection.Open();
+            using var command = new SQLiteCommand("INSERT INTO attacks (encounter_id, source_name,target_name,damage_type,skill_name,damage_amount,mitigated_amount) VALUES (@EncounterId,@SourceName,@TargetName,@DamageType,@SkillName,@DamageAmount,@MitigatedAmount) RETURNING id;", connection);
             command.Parameters.AddWithValue("@EncounterId", encounterId);
             command.Parameters.AddWithValue("@SourceName", sourceName.Trim());
             command.Parameters.AddWithValue("@TargetName", targetName.Trim());
@@ -220,23 +245,32 @@ namespace PatheonParser
             command.Parameters.AddWithValue("@SkillName", skillName.Trim());
             command.Parameters.AddWithValue("@DamageAmount", damageAmount);
             command.Parameters.AddWithValue("@MitigatedAmount", mitigatedAmount);
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return reader.GetInt32(0);
+            }
 
-            command.ExecuteNonQuery();
+            return 0;
         }
 
-        public void AddHeal(int encounterId, string sourceName, string targetName, string skillName, int amount)
+        public int AddHeal(int encounterId, string sourceName, string targetName, string skillName, int amount)
         {
             using var connection = new SQLiteConnection("Data Source=PatheonParser.db");
             connection.Open();
-            using var command = new SQLiteCommand("INSERT INTO heals (encounter_id,source_name,target_name,skill_name,amount) VALUES (@EncounterId,@SourceName,@TargetName,@SkillName,@Amount)", connection);
-
+            using var command = new SQLiteCommand("INSERT INTO heals (encounter_id,source_name,target_name,skill_name,amount) VALUES (@EncounterId,@SourceName,@TargetName,@SkillName,@Amount) RETURNING id;", connection);
             command.Parameters.AddWithValue("@EncounterId", encounterId);
             command.Parameters.AddWithValue("@SourceName", sourceName.Trim());
             command.Parameters.AddWithValue("@TargetName", targetName.Trim());
             command.Parameters.AddWithValue("@SkillName", skillName.Trim());
             command.Parameters.AddWithValue("@Amount", amount);
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return reader.GetInt32(0);
+            }
 
-            command.ExecuteNonQuery();
+            return 0;
         }
 
         public Tesseract.Rect FindCombatWindowRect(Pix image)
